@@ -1,0 +1,97 @@
+units	metal
+boundary p p p
+atom_style full
+bond_style harmonic
+angle_style harmonic
+dihedral_style opls
+restart 1000 rst.1 rst.2 
+variable		cut_off equal 10.0  
+timestep	    1e-3   
+read_restart  npt.rst
+include '../../bond.coeff'
+## metal time unit is picoseconds, 1 ps = 1000 fs, 
+## engery unit is eV, 1 ev = 23 kcal/mol       1 kcal/mol = 0.043 ev
+pair_style    	hybrid/overlay lj/cut/coul/long ${cut_off} ${cut_off}  buck/coul/long ${cut_off} table linear 39901
+pair_modify mix geometric 
+special_bonds lj/coul 0.0 0.0 0.5
+kspace_style pppm 1.0e-4
+fix fSHAKE all shake 0.0001 20 0 b 2 4 # modified to the hexane shaked bond information
+include '../../pair.coeff_silica'
+include '../../pair.coeff_mix'
+
+neighbor		3.0 bin
+neigh_modify	check yes every 1 delay 0 page  100000 one 10000
+
+reset_timestep 	0
+
+# change this for different systems
+group liquid type 1 2 3
+group silica type 4 5
+
+# change for different systems
+region 1 block INF INF INF INF 60 75  # upper move region
+region 2 block INF INF INF INF 0  14   # lower move region 
+
+region 3 block INF INF INF INF 35 60 # upper thermo region
+region 4 block INF INF INF INF 14 35 # lower thermo region
+
+group upper_move region 1
+group lower_move region 2
+
+group upper_thermo region 3
+group lower_thermo region 4
+
+group upper_wall_thermo subtract upper_thermo liquid
+group lower_wall_thermo subtract lower_thermo liquid
+group wall_thermo union upper_wall_thermo lower_wall_thermo
+
+
+# 1 pascal is equal to 9.8692316931427E-6 atm, or 1.0E-5 bar.
+variable           vhigh            equal    2.0 
+variable           vlow             equal    0.0   
+variable           bar2Pa           equal    1e5
+variable           ps2s             equal    1.0e-12
+variable           PaS2mPaS         equal    1000
+variable           viscoeff         equal    v_bar2Pa*v_ps2s*v_PaS2mPaS
+
+fix       nveall 	all 	 	 	nve
+fix       move1     upper_move 	    move  linear   ${vhigh}   0    0   units box
+fix       move2     lower_move      move  linear   ${vlow}    0    0   units box
+
+# compute	     mobile liquid temp
+# fix	    	 1 liquid temp/rescale 200 300.0 300.0 10 1.0
+# fix_modify   1 temp mobile
+
+compute            walltemp   wall_thermo    temp/partial 0 1 1
+fix                lanfix    wall_thermo    langevin 300 300 1e-1 123456 tally yes
+fix_modify         lanfix    temp   walltemp
+
+compute	     mobile liquid temp
+
+compute            per_liquid_vol          liquid     voronoi/atom
+compute            liquid_vol              liquid     reduce   sum   c_per_liquid_vol[1]
+variable           real_liquid_thickness   equal      c_liquid_vol/(lx*ly)
+
+compute            1  liquid stress/atom mobile
+compute            11 liquid reduce      sum  c_1[1]
+compute            12 liquid reduce      sum  c_1[2]
+compute            13 liquid reduce      sum  c_1[3]
+compute            14 liquid reduce      sum  c_1[4]
+compute            15 liquid reduce      sum  c_1[5]
+compute            16 liquid reduce      sum  c_1[6]
+
+variable           sigma1v 				   equal      c_15/c_liquid_vol
+variable           visc01  				   equal      v_viscoeff*v_sigma1v/(${vhigh}/v_real_liquid_thickness)
+
+compute   10    liquid     chunk/atom   bin/1d  z    lower    0.5  units  box
+fix       101   liquid     ave/chunk    100    20   2000   10   vx  density/mass density/number   norm  sample file  v.d.liquid
+
+fix   pvis    liquid   ave/time     100     20     2000  v_visc01 c_11 c_12 c_13 c_14 c_15 c_16  file    viscosity.profile
+
+thermo             100
+thermo_style       custom step c_mobile temp press pe ke etotal density f_lanfix
+dump               3 all custom 2000 nve.lammpstrj id type x y z vx vy vz fx fy fz
+run                2000000
+undump             3
+write_data 		   nve.data
+write_restart 	   nve.rst

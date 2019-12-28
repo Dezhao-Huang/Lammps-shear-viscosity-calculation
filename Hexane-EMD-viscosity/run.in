@@ -1,0 +1,92 @@
+units	metal
+boundary p p p
+atom_style full
+bond_style harmonic
+angle_style harmonic
+dihedral_style opls
+restart 1000 rst.1 rst.2 
+variable		cut_off equal 10.0  
+timestep	    1e-3   
+read_restart  ./NPT.rst
+include '../bond.coeff'
+## metal time unit is picoseconds, 1 ps = 1000 fs, 
+## engery unit is eV, 1 ev = 23 kcal/mol       1 kcal/mol = 0.043 ev
+pair_style    	hybrid/overlay lj/cut/coul/long ${cut_off} ${cut_off}  buck/coul/long ${cut_off} table linear 39901
+pair_modify mix geometric 
+special_bonds lj/coul 0.0 0.0 0.5
+kspace_style pppm 1.0e-4
+fix fSHAKE all shake 0.0001 20 0 b 2 4 # modified to the hexane shaked bond information
+include '../pair.coeff_silica'
+include '../pair.coeff_mix'
+# change this for different systems
+group liquid type 1 2 3
+group silica type 4 5
+
+neighbor		3.0 bin
+neigh_modify	check yes every 1 delay 0 page  100000 one 10000
+
+reset_timestep 	0
+variable    dt equal 0.001
+timestep     ${dt}
+variable T equal 300
+# 1 pascal is equal to 9.8692316931427E-6 atm, or 1.0E-5 bar.
+variable           vhigh            equal    1.0 
+variable           vlow             equal    0.0   
+variable           bar2Pa           equal    1e5
+variable           ps2s             equal    1.0e-12
+variable           PaS2mPaS         equal    1000
+variable           viscoeff         equal    v_bar2Pa*v_ps2s*v_PaS2mPaS
+
+
+
+variable    p equal 400     # correlation length
+variable    s equal 5       # sample interval
+variable    d equal $p*$s   # dump interval
+
+# convert from LAMMPS real units to SI
+variable    kB equal 1.3806504e-23    # [J/K] Boltzmann
+variable    atm2Pa equal 101325.0
+variable    A2m equal 1.0e-10
+variable    fs2s equal 1.0e-15
+# convert from LAMMPS metal units to SI
+# variable    convertM2S equal ${bar2Pa}*${bar2Pa}*${ps2s}*${A2m}*${A2m}*${A2m}
+variable    convertM2S equal ${bar2Pa}*${bar2Pa}*${ps2s}*${A2m}*${A2m}*${A2m}*${PaS2mPaS}
+
+compute            per_liquid_vol          liquid     voronoi/atom
+compute            liquid_vol              liquid     reduce   sum   c_per_liquid_vol[1]
+variable           real_liquid_vol equal  c_liquid_vol
+variable           real_liquid_thickness   equal      c_liquid_vol/(lx*ly)
+
+compute    myPress  liquid stress/atom NULL
+compute    p 		liquid reduce sum c_myPress[4] c_myPress[5] c_myPress[6] # sum the pxy pxz pyz 
+
+variable liquidvol equal 166202
+
+
+fix       nveall 	all 	 	 	nve
+
+
+variable lpxy equal c_p[1]/${liquidvol}
+variable lpxz equal c_p[2]/${liquidvol}
+variable lpyz equal c_p[3]/${liquidvol}
+
+fix          SS all ave/correlate $s $p $d &
+             v_lpxy v_lpxz v_lpyz type auto file S0St.dat ave running
+
+variable     scale equal ${convertM2S}/(${kB}*$T)*$s*${dt}*${liquidvol}
+
+variable     v11 equal trap(f_SS[3])*${scale}
+variable     v22 equal trap(f_SS[4])*${scale}
+variable     v33 equal trap(f_SS[5])*${scale}
+
+variable     vis equal (v_v11+v_v22+v_v33)/3.0
+
+compute	     mobile liquid temp
+
+thermo       $d
+thermo_style       custom step c_mobile temp press pe ke etotal  c_liquid_vol v_v11 v_v22 v_v33 v_vis 
+dump               3 all custom 20000 nve.lammpstrj id type x y z vx vy vz fx fy fz
+run                5000000
+undump             3
+write_data 		   nve.data
+write_restart 	   nve.rst
